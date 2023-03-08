@@ -15,11 +15,10 @@ use crate::{
     driver::{op::Op, shared_fd::SharedFd},
     io::{
         as_fd::{AsReadFd, AsWriteFd, SharedFdWrapper},
-        AsyncReadRent, AsyncWriteRent, Split,
+        operation_canceled, AsyncReadRent, AsyncWriteRent, CancelHandle, CancelableAsyncReadRent,
+        CancelableAsyncWriteRent, Split,
     },
 };
-
-const EMPTY_SLICE: [u8; 0] = [];
 
 /// TcpStream
 pub struct TcpStream {
@@ -60,14 +59,20 @@ impl TcpStream {
     #[cfg(unix)]
     /// Establishe a connection to the specified `addr`.
     pub async fn connect_addr(addr: SocketAddr) -> io::Result<Self> {
-        let op = Op::connect(libc::SOCK_STREAM, addr)?;
+        let domain = match addr {
+            SocketAddr::V4(_) => libc::AF_INET,
+            SocketAddr::V6(_) => libc::AF_INET6,
+        };
+        let socket = crate::net::new_socket(domain, libc::SOCK_STREAM)?;
+        let op = Op::connect(SharedFd::new(socket)?, addr)?;
         let completion = op.await;
         completion.meta.result?;
 
-        let mut stream = TcpStream::from_shared_fd(completion.data.fd);
-        // wait write ready
-        // TODO: not use write to detect writable
-        let _ = stream.write(&EMPTY_SLICE).await;
+        let stream = TcpStream::from_shared_fd(completion.data.fd);
+        // wait write ready on epoll branch
+        if crate::driver::op::is_legacy() {
+            stream.writable(true).await?;
+        }
         // getsockopt
         let sys_socket = unsafe { std::net::TcpStream::from_raw_fd(stream.fd.raw_fd()) };
         let err = sys_socket.take_error();
@@ -121,8 +126,43 @@ impl TcpStream {
 
     /// Creates new `TcpStream` from a `std::net::TcpStream`.
     pub fn from_std(stream: std::net::TcpStream) -> io::Result<Self> {
-        let fd = stream.into_raw_fd();
-        Ok(Self::from_shared_fd(SharedFd::new(fd)?))
+        match SharedFd::new(stream.as_raw_fd()) {
+            Ok(shared) => {
+                stream.into_raw_fd();
+                Ok(Self::from_shared_fd(shared))
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Wait for read readiness.
+    /// Note: Do not use it before every io. It is different from other runtimes!
+    ///
+    /// Everytime call to this method may pay a syscall cost.
+    /// In uring impl, it will push a PollAdd op; in epoll impl, it will use use
+    /// inner readiness state; if !relaxed, it will call syscall poll after that.
+    ///
+    /// If relaxed, on legacy driver it may return false positive result.
+    /// If you want to do io by your own, you must maintain io readiness and wait
+    /// for io ready with relaxed=false.
+    pub async fn readable(&self, relaxed: bool) -> io::Result<()> {
+        let op = Op::poll_read(&self.fd, relaxed).unwrap();
+        op.wait().await
+    }
+
+    /// Wait for write readiness.
+    /// Note: Do not use it before every io. It is different from other runtimes!
+    ///
+    /// Everytime call to this method may pay a syscall cost.
+    /// In uring impl, it will push a PollAdd op; in epoll impl, it will use use
+    /// inner readiness state; if !relaxed, it will call syscall poll after that.
+    ///
+    /// If relaxed, on legacy driver it may return false positive result.
+    /// If you want to do io by your own, you must maintain io readiness and wait
+    /// for io ready with relaxed=false.
+    pub async fn writable(&self, relaxed: bool) -> io::Result<()> {
+        let op = Op::poll_write(&self.fd, relaxed).unwrap();
+        op.wait().await
     }
 }
 
@@ -191,7 +231,7 @@ impl AsyncWriteRent for TcpStream {
     #[inline]
     fn write<T: IoBuf>(&mut self, buf: T) -> Self::WriteFuture<'_, T> {
         // Submit the write operation
-        let op = Op::send(&self.fd, buf).unwrap();
+        let op = Op::send(self.fd.clone(), buf).unwrap();
         op.write()
     }
 
@@ -225,6 +265,74 @@ impl AsyncWriteRent for TcpStream {
     }
 }
 
+impl CancelableAsyncWriteRent for TcpStream {
+    type CancelableWriteFuture<'a, B> = impl Future<Output = crate::BufResult<usize, B>> where
+        B: IoBuf + 'a;
+    type CancelableWritevFuture<'a, B> = impl Future<Output = crate::BufResult<usize, B>> where
+        B: IoVecBuf + 'a;
+    type CancelableFlushFuture<'a> = impl Future<Output = io::Result<()>>;
+    type CancelableShutdownFuture<'a> = impl Future<Output = io::Result<()>>;
+
+    #[inline]
+    fn cancelable_write<T: IoBuf>(
+        &mut self,
+        buf: T,
+        c: CancelHandle,
+    ) -> Self::CancelableWriteFuture<'_, T> {
+        let fd = self.fd.clone();
+        async move {
+            if c.canceled() {
+                return (Err(operation_canceled()), buf);
+            }
+
+            let op = Op::send(fd, buf).unwrap();
+            let _guard = c.assocate_op(op.op_canceller());
+            op.write().await
+        }
+    }
+
+    #[inline]
+    fn cancelable_writev<T: IoVecBuf>(
+        &mut self,
+        buf_vec: T,
+        c: CancelHandle,
+    ) -> Self::CancelableWritevFuture<'_, T> {
+        let fd = self.fd.clone();
+        async move {
+            if c.canceled() {
+                return (Err(operation_canceled()), buf_vec);
+            }
+
+            let op = Op::writev(&fd, buf_vec).unwrap();
+            let _guard = c.assocate_op(op.op_canceller());
+            op.write().await
+        }
+    }
+
+    #[inline]
+    fn cancelable_flush(&mut self, _c: CancelHandle) -> Self::CancelableFlushFuture<'_> {
+        // Tcp stream does not need flush.
+        async move { Ok(()) }
+    }
+
+    #[cfg(unix)]
+    fn cancelable_shutdown(&mut self, _c: CancelHandle) -> Self::CancelableShutdownFuture<'_> {
+        // We could use shutdown op here, which requires kernel 5.11+.
+        // However, for simplicity, we just close the socket using direct syscall.
+        let fd = self.as_raw_fd();
+        let res = match unsafe { libc::shutdown(fd, libc::SHUT_WR) } {
+            -1 => Err(io::Error::last_os_error()),
+            _ => Ok(()),
+        };
+        async move { res }
+    }
+
+    #[cfg(windows)]
+    fn cancelable_shutdown(&mut self, _c: CancelHandle) -> Self::CancelableShutdownFuture<'_> {
+        async { unimplemented!() }
+    }
+}
+
 impl AsyncReadRent for TcpStream {
     type ReadFuture<'a, B> = impl std::future::Future<Output = crate::BufResult<usize, B>> where
         B: IoBufMut + 'a;
@@ -234,15 +342,58 @@ impl AsyncReadRent for TcpStream {
     #[inline]
     fn read<T: IoBufMut>(&mut self, buf: T) -> Self::ReadFuture<'_, T> {
         // Submit the read operation
-        let op = Op::recv(&self.fd, buf).unwrap();
+        let op = Op::recv(self.fd.clone(), buf).unwrap();
         op.read()
     }
 
     #[inline]
     fn readv<T: IoVecBufMut>(&mut self, buf: T) -> Self::ReadvFuture<'_, T> {
         // Submit the read operation
-        let op = Op::readv(&self.fd, buf).unwrap();
+        let op = Op::readv(self.fd.clone(), buf).unwrap();
         op.read()
+    }
+}
+
+impl CancelableAsyncReadRent for TcpStream {
+    type CancelableReadFuture<'a, B> = impl std::future::Future<Output = crate::BufResult<usize, B>> where
+        B: IoBufMut + 'a;
+    type CancelableReadvFuture<'a, B> = impl std::future::Future<Output = crate::BufResult<usize, B>> where
+        B: IoVecBufMut + 'a;
+
+    #[inline]
+    fn cancelable_read<T: IoBufMut>(
+        &mut self,
+        buf: T,
+        c: CancelHandle,
+    ) -> Self::CancelableReadFuture<'_, T> {
+        let fd = self.fd.clone();
+        async move {
+            if c.canceled() {
+                return (Err(operation_canceled()), buf);
+            }
+
+            let op = Op::recv(fd, buf).unwrap();
+            let _guard = c.assocate_op(op.op_canceller());
+            op.read().await
+        }
+    }
+
+    #[inline]
+    fn cancelable_readv<T: IoVecBufMut>(
+        &mut self,
+        buf: T,
+        c: CancelHandle,
+    ) -> Self::CancelableReadvFuture<'_, T> {
+        let fd = self.fd.clone();
+        async move {
+            if c.canceled() {
+                return (Err(operation_canceled()), buf);
+            }
+
+            let op = Op::readv(fd, buf).unwrap();
+            let _guard = c.assocate_op(op.op_canceller());
+            op.read().await
+        }
     }
 }
 

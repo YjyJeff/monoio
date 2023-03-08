@@ -8,7 +8,7 @@ use std::{
 use super::{socket_addr::SocketAddr, UnixStream};
 use crate::{
     driver::{op::Op, shared_fd::SharedFd},
-    io::stream::Stream,
+    io::{stream::Stream, CancelHandle},
     net::ListenerConfig,
 };
 
@@ -86,6 +86,51 @@ impl UnixListener {
         let addr = SocketAddr::from_parts(raw_addr_un, raw_addr_len);
 
         Ok((stream, addr))
+    }
+
+    /// Cancelable accept
+    pub async fn cancelable_accept(&self, c: CancelHandle) -> io::Result<(UnixStream, SocketAddr)> {
+        use crate::io::operation_canceled;
+
+        if c.canceled() {
+            return Err(operation_canceled());
+        }
+        let op = Op::accept(&self.fd)?;
+        let _guard = c.assocate_op(op.op_canceller());
+
+        // Await the completion of the event
+        let completion = op.await;
+
+        // Convert fd
+        let fd = completion.meta.result?;
+
+        // Construct stream
+        let stream = UnixStream::from_shared_fd(SharedFd::new(fd as _)?);
+
+        // Construct SocketAddr
+        let mut storage = unsafe { std::mem::MaybeUninit::assume_init(completion.data.addr.0) };
+        let storage: *mut libc::sockaddr_storage = &mut storage as *mut _;
+        let raw_addr_un: libc::sockaddr_un = unsafe { *storage.cast() };
+        let raw_addr_len = completion.data.addr.1;
+
+        let addr = SocketAddr::from_parts(raw_addr_un, raw_addr_len);
+
+        Ok((stream, addr))
+    }
+
+    /// Wait for read readiness.
+    /// Note: Do not use it before every io. It is different from other runtimes!
+    ///
+    /// Everytime call to this method may pay a syscall cost.
+    /// In uring impl, it will push a PollAdd op; in epoll impl, it will use use
+    /// inner readiness state; if !relaxed, it will call syscall poll after that.
+    ///
+    /// If relaxed, on legacy driver it may return false positive result.
+    /// If you want to do io by your own, you must maintain io readiness and wait
+    /// for io ready with relaxed=false.
+    pub async fn readable(&self, relaxed: bool) -> io::Result<()> {
+        let op = Op::poll_read(&self.fd, relaxed).unwrap();
+        op.wait().await
     }
 }
 
