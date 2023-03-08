@@ -16,6 +16,7 @@ mod open;
 mod read;
 mod recv;
 mod send;
+mod statx;
 mod write;
 
 #[cfg(all(target_os = "linux", feature = "splice"))]
