@@ -203,6 +203,7 @@ impl Inner {
 pub(crate) enum UnparkHandle {
     #[cfg(all(target_os = "linux", feature = "iouring"))]
     Uring(self::uring::UnparkHandle),
+    #[cfg(all(unix, feature = "legacy"))]
     Legacy(self::legacy::UnparkHandle),
 }
 
