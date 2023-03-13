@@ -20,17 +20,25 @@ pub(crate) struct Read<T> {
     #[allow(unused)]
     fd: SharedFd,
     offset: libc::off_t,
+    /// Read with async worker
+    is_async: bool,
 
     /// Reference to the in-flight buffer.
     pub(crate) buf: T,
 }
 
 impl<T: IoBufMut> Op<Read<T>> {
-    pub(crate) fn read_at(fd: &SharedFd, buf: T, offset: u64) -> io::Result<Op<Read<T>>> {
+    pub(crate) fn read_at(
+        fd: &SharedFd,
+        buf: T,
+        offset: u64,
+        is_async: bool,
+    ) -> io::Result<Op<Read<T>>> {
         Op::submit_with(Read {
             fd: fd.clone(),
             offset: offset as _,
             buf,
+            is_async,
         })
     }
 
@@ -57,13 +65,19 @@ impl<T: IoBufMut> Op<Read<T>> {
 impl<T: IoBufMut> OpAble for Read<T> {
     #[cfg(all(target_os = "linux", feature = "iouring"))]
     fn uring_op(&mut self) -> io_uring::squeue::Entry {
-        opcode::Read::new(
+        let entry = opcode::Read::new(
             types::Fd(self.fd.raw_fd()),
             self.buf.write_ptr(),
             self.buf.bytes_total() as _,
         )
         .offset(self.offset)
-        .build()
+        .build();
+
+        if self.is_async {
+            entry.flags(io_uring::squeue::Flags::ASYNC)
+        } else {
+            entry
+        }
     }
 
     #[cfg(all(unix, feature = "legacy"))]

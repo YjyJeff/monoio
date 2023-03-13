@@ -79,7 +79,7 @@ pub use {builder::FusionDriver, runtime::FusionRuntime};
 ///         // Read some data, the buffer is passed by ownership and
 ///         // submitted to the kernel. When the operation completes,
 ///         // we get the buffer back.
-///         let (res, buf) = file.read_at(buf, 0).await;
+///         let (res, buf) = file.read_at(buf, 0, false).await;
 ///         let n = res?;
 ///
 ///         // Display the contents
@@ -121,7 +121,7 @@ where
 ///         // Read some data, the buffer is passed by ownership and
 ///         // submitted to the kernel. When the operation completes,
 ///         // we get the buffer back.
-///         let (res, buf) = file.read_at(buf, 0).await;
+///         let (res, buf) = file.read_at(buf, 0, false).await;
 ///         let n = res?;
 ///
 ///         // Display the contents
