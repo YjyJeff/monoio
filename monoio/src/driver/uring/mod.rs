@@ -76,19 +76,28 @@ struct Ops {
     slab: Slab<Lifecycle>,
 }
 
-impl IoUringDriver {
-    const DEFAULT_ENTRIES: u32 = 1024;
+/// Config for building io-uring
+pub(crate) struct IoUringConfig {
+    /// Number of entries
+    pub(crate) entries: u32,
+    /// Max workers
+    pub(crate) max_workers: [u32; 2],
+}
 
-    pub(crate) fn new(b: &io_uring::Builder) -> io::Result<IoUringDriver> {
-        Self::new_with_entries(b, Self::DEFAULT_ENTRIES)
-    }
+impl IoUringDriver {
+    pub(crate) const DEFAULT_ENTRIES: u32 = 1024;
 
     #[cfg(not(feature = "sync"))]
-    pub(crate) fn new_with_entries(
+    pub(crate) fn new_with_config(
         urb: &io_uring::Builder,
-        entries: u32,
+        mut config: IoUringConfig,
     ) -> io::Result<IoUringDriver> {
-        let uring = ManuallyDrop::new(urb.build(entries)?);
+        let ring = urb.build(config.entries)?;
+        // Register max number of workers
+        ring.submitter()
+            .register_iowq_max_workers(&mut config.max_workers)?;
+
+        let uring = ManuallyDrop::new(ring);
 
         let inner = Rc::new(UnsafeCell::new(UringInner {
             ops: Ops::new(),
@@ -102,11 +111,16 @@ impl IoUringDriver {
     }
 
     #[cfg(feature = "sync")]
-    pub(crate) fn new_with_entries(
+    pub(crate) fn new_with_config(
         urb: &io_uring::Builder,
-        entries: u32,
+        mut config: IoUringConfig,
     ) -> io::Result<IoUringDriver> {
-        let uring = ManuallyDrop::new(urb.build(entries)?);
+        let ring = urb.build(config.entries)?;
+        // Register max number of workers
+        ring.submitter()
+            .register_iowq_max_workers(&mut config.max_workers)?;
+
+        let uring = ManuallyDrop::new(ring);
 
         // Create eventfd and register it to the ring.
         let waker = {
