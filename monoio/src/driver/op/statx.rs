@@ -1,13 +1,10 @@
 #[cfg(all(target_os = "linux", feature = "iouring"))]
 use io_uring::{opcode, types};
-#[cfg(all(unix, feature = "legacy"))]
-use {
-    crate::{driver::legacy::ready::Direction, syscall_u32},
-    std::os::unix::prelude::AsRawFd,
-};
 
 use super::{Op, OpAble};
 use crate::driver::shared_fd::SharedFd;
+#[cfg(all(unix, feature = "legacy"))]
+use crate::{driver::legacy::ready::Direction, syscall_u32};
 
 pub(crate) struct Statx {
     fd: SharedFd,
@@ -70,14 +67,13 @@ impl OpAble for Statx {
     #[cfg(all(target_os = "linux", feature = "iouring"))]
     fn uring_op(&mut self) -> io_uring::squeue::Entry {
         opcode::Statx::new(
-            types::Fd(self.fd.as_raw_fd()),
+            types::Fd(self.fd.raw_fd()),
             b"\0" as *const _ as *const libc::c_char,
             self.buf.as_mut() as *mut libc::statx as *mut _,
         )
         .flags(libc::AT_EMPTY_PATH)
         .mask(libc::STATX_ALL)
         .build()
-        .user_data(0x99)
     }
 
     #[cfg(all(unix, feature = "legacy"))]
@@ -98,13 +94,12 @@ impl OpAble for Statx {
 }
 
 /// FileAttr copied from std, because constructing Metadata is private
-#[derive(Debug)]
 pub(crate) struct FileAttr {
     stat: libc::stat64,
     statx_extra_fields: Option<StatxExtraFields>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 struct StatxExtraFields {
     // This is needed to check if btime is supported by the filesystem.
     stx_mask: u32,

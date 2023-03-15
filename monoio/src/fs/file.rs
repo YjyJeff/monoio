@@ -53,6 +53,7 @@ use crate::{
 ///     Ok(())
 /// }
 /// ```
+#[derive(Clone)]
 pub struct File {
     /// Open file descriptor
     fd: SharedFd,
