@@ -1,13 +1,10 @@
 #[cfg(all(target_os = "linux", feature = "iouring"))]
 use io_uring::{opcode, types};
-#[cfg(all(unix, feature = "legacy"))]
-use {
-    crate::{driver::legacy::ready::Direction, syscall_u32},
-    std::os::unix::prelude::AsRawFd,
-};
 
 use super::{Op, OpAble};
 use crate::driver::shared_fd::SharedFd;
+#[cfg(all(unix, feature = "legacy"))]
+use crate::{driver::legacy::ready::Direction, syscall_u32};
 
 pub(crate) struct Statx {
     fd: SharedFd,
@@ -70,7 +67,7 @@ impl OpAble for Statx {
     #[cfg(all(target_os = "linux", feature = "iouring"))]
     fn uring_op(&mut self) -> io_uring::squeue::Entry {
         opcode::Statx::new(
-            types::Fd(self.fd.as_raw_fd()),
+            types::Fd(self.fd.raw_fd()),
             b"\0" as *const _ as *const libc::c_char,
             self.buf.as_mut() as *mut libc::statx as *mut _,
         )
