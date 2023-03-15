@@ -32,8 +32,6 @@ pub use self::legacy::LegacyDriver;
 use self::legacy::LegacyInner;
 use self::op::{CompletionMeta, Op, OpAble};
 #[cfg(all(target_os = "linux", feature = "iouring"))]
-pub(crate) use self::uring::IoUringConfig;
-#[cfg(all(target_os = "linux", feature = "iouring"))]
 pub use self::uring::IoUringDriver;
 #[cfg(all(target_os = "linux", feature = "iouring"))]
 use self::uring::UringInner;
