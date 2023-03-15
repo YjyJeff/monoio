@@ -164,3 +164,14 @@ fn assert_invalid_fd(fd: RawFd) {
 
     assert!(f.read_to_end(&mut buf).is_err());
 }
+
+#[cfg(unix)]
+#[monoio::test_all]
+async fn metadata() {
+    let mut tempfile = tempfile();
+    tempfile.write_all(HELLO).unwrap();
+
+    let file = File::open(tempfile.path()).await.unwrap();
+    let metadata = file.metadata().await.unwrap();
+    assert_eq!(metadata.len(), 14)
+}

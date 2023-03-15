@@ -482,6 +482,13 @@ impl File {
         self.fd.close().await;
         Ok(())
     }
+
+    /// Queries metadata about the underlying file.
+    pub async fn metadata(&self) -> io::Result<super::Metadata> {
+        let op = Op::statx(&self.fd)?;
+        let complete = op.await;
+        Ok(super::Metadata(complete.data.read()))
+    }
 }
 
 #[cfg(unix)]

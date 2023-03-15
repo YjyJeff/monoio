@@ -20,6 +20,8 @@ mod send;
 mod statx;
 mod write;
 
+pub(crate) use statx::FileAttr;
+
 #[cfg(all(target_os = "linux", feature = "splice"))]
 mod splice;
 
