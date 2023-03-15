@@ -157,7 +157,7 @@ impl File {
     ///     let buffer = vec![0; 10];
     ///
     ///     // Read up to 10 bytes
-    ///     let (res, buffer) = f.read_at(buffer, 0, false).await;
+    ///     let (res, buffer) = f.read_at(buffer, 0).await;
     ///     let n = res?;
     ///
     ///     println!("The bytes: {:?}", &buffer[..n]);
@@ -167,14 +167,9 @@ impl File {
     ///     Ok(())
     /// }
     /// ```
-    pub async fn read_at<T: IoBufMut>(
-        &self,
-        buf: T,
-        pos: u64,
-        is_aync: bool,
-    ) -> crate::BufResult<usize, T> {
+    pub async fn read_at<T: IoBufMut>(&self, buf: T, pos: u64) -> crate::BufResult<usize, T> {
         // Submit the read operation
-        let op = Op::read_at(&self.fd, buf, pos, is_aync).unwrap();
+        let op = Op::read_at(&self.fd, buf, pos).unwrap();
         op.read().await
     }
 
@@ -215,7 +210,7 @@ impl File {
     ///     let buffer = vec![0; 10];
     ///
     ///     // Read up to 10 bytes
-    ///     let (res, buffer) = f.read_exact_at(buffer, 0, false).await;
+    ///     let (res, buffer) = f.read_exact_at(buffer, 0).await;
     ///     res?;
     ///
     ///     println!("The bytes: {:?}", buffer);
@@ -232,13 +227,12 @@ impl File {
         &self,
         mut buf: T,
         pos: u64,
-        is_async: bool,
     ) -> crate::BufResult<(), T> {
         let len = buf.bytes_total();
         let mut read = 0;
         while read < len {
             let slice = unsafe { buf.slice_mut_unchecked(read..len) };
-            let (res, slice) = self.read_at(slice, pos + read as u64, is_async).await;
+            let (res, slice) = self.read_at(slice, pos + read as u64).await;
             buf = slice.into_inner();
             match res {
                 Ok(0) => {

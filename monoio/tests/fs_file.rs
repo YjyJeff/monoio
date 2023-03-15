@@ -9,7 +9,7 @@ const HELLO: &[u8] = b"hello world...";
 
 async fn read_hello(file: &File) {
     let buf = Vec::with_capacity(1024);
-    let (res, buf) = file.read_at(buf, 0, false).await;
+    let (res, buf) = file.read_at(buf, 0).await;
     let n = res.unwrap();
 
     assert!(n > 0 && n <= HELLO.len());
@@ -33,12 +33,12 @@ async fn basic_read_exact() {
 
     let file = File::open(tempfile.path()).await.unwrap();
     let buf = Vec::with_capacity(HELLO.len());
-    let (res, buf) = file.read_exact_at(buf, 0, false).await;
+    let (res, buf) = file.read_exact_at(buf, 0).await;
     res.unwrap();
     assert_eq!(&buf[..], HELLO);
 
     let buf = Vec::with_capacity(HELLO.len() * 2);
-    let (res, _) = file.read_exact_at(buf, 0, false).await;
+    let (res, _) = file.read_exact_at(buf, 0).await;
     assert_eq!(res.unwrap_err().kind(), std::io::ErrorKind::UnexpectedEof);
 }
 #[cfg(unix)]
